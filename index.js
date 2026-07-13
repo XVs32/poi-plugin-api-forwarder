@@ -1,42 +1,73 @@
 const React = require('react')
 
-// 1. 監聽全域的遊戲回應事件
-window.addEventListener('game.response', (e) => {
-    const { path, body, postBody } = e.detail
+const TARGET_URL = 'http://localhost:9223/webhook/kancolle'
 
-    // 你的後端接收 API 網址 (請自行替換)
-    const targetUrl = 'http://localhost:9223/webhook/kancolle'
+// =====================================================================
+// Track 1: Handle standard KCSAPI (Preserve full payload/body)
+// =====================================================================
+if (!window.hasKancolleResponseListener) {
+    window.addEventListener('game.response', (e) => {
+        const { path, body, postBody } = e.detail
 
-    // 過濾掉不必要的靜態資源，只抓取 /kcsapi/ 開頭的遊戲數據
-    if (path && (path.startsWith('/kcsapi/') || path.includes('kcs2/resources/map'))) {
-        console.log(`[轉發器] 偵測到 API: ${path}`)
+        if (path && path.startsWith('/kcsapi/')) {
+            fetch(TARGET_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: path,
+                    request: postBody,
+                    response: body,
+                    stage: 'response_received',
+                    timestamp: Date.now()
+                })
+            }).catch(() => { }) // Mute errors to prevent console spam when backend is offline
+        }
+    })
+    window.hasKancolleResponseListener = true
+}
 
-        fetch(targetUrl, {
+// =====================================================================
+// Track 2: Handle Map Resources (Capture URL immediately, bypass cache)
+// =====================================================================
+try {
+    const { remote } = require('electron')
+    const session = remote.getCurrentWindow().webContents.session
+
+    // Remove existing listener (if any) to prevent duplication during hot-reloads
+    session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, null)
+
+    // Register the optimized core network interceptor
+    session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, (details, callback) => {
+        const url = details.url
+        console.log(`[Electron core catched] MAP URL: ${url}`)
+        fetch(TARGET_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                path: path,         // 例如 "/kcsapi/api_port/port"
-                request: postBody,  // 玩家發送給伺服器的參數
-                response: body,     // 伺服器回傳的 JSON 數據
+                path: details.url,
+                stage: 'going_to_send',
                 timestamp: Date.now()
             })
-        })
-            .then(res => console.log(`[轉發器] ${path} 轉發成功`))
-            .catch(err => console.error(`[轉發器] 轉發失敗:`, err))
-    }
-})
+        }).catch(() => { }) // Mute errors
 
-// 2. 導出介面 (改用純 JS 寫法，避免 JSX 造成 SyntaxError)
+        callback({ cancel: false })
+    })
+} catch (e) {
+    // Silently fail if Electron remote context is unavailable
+}
+
+// =====================================================================
+// 3. Plugin Interface Export (Vanilla JS style for lightweight execution)
+// =====================================================================
 module.exports = {
     reactClass: class ForwarderPlugin extends React.Component {
         render() {
             return React.createElement(
                 'div',
                 { style: { padding: '15px' } },
-                React.createElement('h3', null, 'API 轉發插件已啟用'),
-                React.createElement('p', null, '正在背景側錄 /kcsapi/ 流量並轉發中...')
+                React.createElement('h3', null, 'KanColle Dual-Track Forwarder'),
+                React.createElement('p', null, '● KCSAPI: Full payload forwarding active'),
+                React.createElement('p', null, '● Map Resources: Real-time URL tracking active')
             )
         }
     }
