@@ -1,0 +1,12 @@
+{
+    "name": "poi-plugin-forwarder",
+    "version": "1.0.0",
+    "description": "轉發遊戲 API 側錄資料到自訂伺服器",
+    "main": "index.js",
+    "author": "Your Name",
+    "poiPlugin": {
+        "name": "API 轉發器",
+        "description": "自動側錄並轉發遊戲 API 資料",
+        "icon": "fa fa-share-square"
+    }
+}
