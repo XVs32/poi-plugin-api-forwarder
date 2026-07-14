@@ -1,6 +1,13 @@
 const React = require('react')
 
-const TARGET_URL = 'http://localhost:9223/webhook/kancolle'
+// =====================================================================
+// Helper: Dynamically resolve the target URL using poi's config manager
+// =====================================================================
+const getTargetUrl = () => {
+    // Default to 9223 if no port is configured in poi settings yet
+    const port = (window.config) ? window.config.get('plugin.forwarder.port', 9223) : 9223
+    return `http://localhost:${port}/webhook/kancolle`
+}
 
 // =====================================================================
 // Track 1: Handle standard KCSAPI (Preserve full payload/body)
@@ -10,7 +17,8 @@ if (!window.hasKancolleResponseListener) {
         const { path, body, postBody } = e.detail
 
         if (path && path.startsWith('/kcsapi/')) {
-            fetch(TARGET_URL, {
+            const url = getTargetUrl()
+            fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -40,7 +48,9 @@ try {
     session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, (details, callback) => {
         const url = details.url
         console.log(`[Electron core catched] MAP URL: ${url}`)
-        fetch(TARGET_URL, {
+
+        const targetUrl = getTargetUrl()
+        fetch(targetUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -57,17 +67,71 @@ try {
 }
 
 // =====================================================================
-// 3. Plugin Interface Export (Vanilla JS style for lightweight execution)
+// 3. Plugin Interface Export (Vanilla JS style with Settings UI)
 // =====================================================================
 module.exports = {
     reactClass: class ForwarderPlugin extends React.Component {
+        constructor(props) {
+            super(props)
+            // Load initial port from config or fallback to 9223
+            const initialPort = (window.config) ? window.config.get('plugin.forwarder.port', 9223) : 9223
+            this.state = {
+                port: initialPort
+            }
+        }
+
+        handlePortChange = (e) => {
+            const newPort = parseInt(e.target.value, 10) || ''
+            this.setState({ port: newPort })
+
+            // Save configuration directly to poi's global config system
+            if (window.config && newPort) {
+                window.config.set('plugin.forwarder.port', newPort)
+            }
+        }
+
         render() {
             return React.createElement(
                 'div',
-                { style: { padding: '15px' } },
-                React.createElement('h3', null, 'KanColle Dual-Track Forwarder'),
-                React.createElement('p', null, '● KCSAPI: Full payload forwarding active'),
-                React.createElement('p', null, '● Map Resources: Real-time URL tracking active')
+                { style: { padding: '15px', fontFamily: 'sans-serif' } },
+
+                // Header
+                React.createElement('h3', { style: { margin: '0 0 10px 0' } }, 'KanColle Dual-Track Forwarder'),
+
+                // Status Indicators
+                React.createElement('p', { style: { margin: '5px 0', fontSize: '13px' } }, '● KCSAPI: Full payload forwarding active'),
+                React.createElement('p', { style: { margin: '5px 0 15px 0', fontSize: '13px' } }, '● Map Resources: Real-time URL tracking active'),
+
+                // Divider line
+                React.createElement('hr', { style: { border: '0', borderTop: '1px solid #ccc', margin: '15px 0' } }),
+
+                // Settings Section
+                React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+                    React.createElement('label', { style: { fontWeight: 'bold', fontSize: '12px' } }, 'Target Webhook Port:'),
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+                        React.createElement('span', { style: { fontSize: '13px', color: '#888' } }, 'http://localhost:'),
+                        React.createElement('input', {
+                            type: 'number',
+                            value: this.state.port,
+                            onChange: this.handlePortChange,
+                            min: 1024,
+                            max: 65535,
+                            style: {
+                                width: '90px',
+                                padding: '5px',
+                                fontSize: '13px',
+                                borderRadius: '4px',
+                                border: '1px solid #555',
+                                backgroundColor: '#222',
+                                color: '#fff'
+                            }
+                        }),
+                        React.createElement('span', { style: { fontSize: '13px', color: '#888' } }, '/webhook/kancolle')
+                    ),
+                    React.createElement('p', { style: { fontSize: '11px', color: '#999', margin: '5px 0 0 0' } },
+                        '* Changes are saved and applied automatically in real time (Default: 9223).'
+                    )
+                )
             )
         }
     }
