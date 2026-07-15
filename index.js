@@ -37,34 +37,39 @@ if (!window.hasKancolleResponseListener) {
 // =====================================================================
 // Track 2: Handle Map Resources (Capture URL immediately, bypass cache)
 // =====================================================================
-try {
-    const { remote } = require('electron')
-    const session = remote.getCurrentWindow().webContents.session
+const registerMapInterceptor = () => {
+    try {
+        const { remote } = require('electron')
+        const session = remote.getCurrentWindow().webContents.session
 
-    // Remove existing listener (if any) to prevent duplication during hot-reloads
-    session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, null)
+        // Remove existing listener (if any) to prevent duplication during hot-reloads or config updates
+        session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, null)
 
-    // Register the optimized core network interceptor
-    session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, (details, callback) => {
-        const url = details.url
-        console.log(`[Electron core catched] MAP URL: ${url}`)
+        // Register the optimized core network interceptor with the latest dynamic URL config
+        session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, (details, callback) => {
+            const url = details.url
+            console.log(`[Electron core catched] MAP URL: ${url}`)
 
-        const targetUrl = getTargetUrl()
-        fetch(targetUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                path: details.url,
-                stage: 'going_to_send',
-                timestamp: Date.now()
-            })
-        }).catch(() => { }) // Mute errors
+            const targetUrl = getTargetUrl()
+            fetch(targetUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: details.url,
+                    stage: 'going_to_send',
+                    timestamp: Date.now()
+                })
+            }).catch(() => { }) // Mute errors
 
-        callback({ cancel: false })
-    })
-} catch (e) {
-    // Silently fail if Electron remote context is unavailable
+            callback({ cancel: false })
+        })
+    } catch (e) {
+        // Silently fail if Electron remote context is unavailable
+    }
 }
+
+// Run once on initial plugin load
+registerMapInterceptor()
 
 // =====================================================================
 // 3. Plugin Interface Export (Vanilla JS style with Settings UI)
@@ -87,6 +92,9 @@ module.exports = {
             // Save configuration directly to poi's global config system
             if (window.config && newPort) {
                 window.config.set('plugin.forwarder.port', newPort)
+
+                // Re-register Electron interceptor to apply the new Port instantly
+                registerMapInterceptor()
             }
         }
 
