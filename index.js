@@ -1,57 +1,44 @@
 const React = require('react')
+const InteractionServer = require('./interaction-server')
 
-// =====================================================================
-// Helper: Dynamically resolve the target URL using poi's config manager
-// =====================================================================
 const getTargetUrl = () => {
-    // Default to 9223 if no port is configured in poi settings yet
-    const port = (window.config) ? window.config.get('plugin.forwarder.port', 9223) : 9223
+    const port = window.config ? window.config.get('plugin.forwarder.port', 9223) : 9223
     return `http://localhost:${port}/webhook/kancolle`
 }
 
-// =====================================================================
-// Track 1: Handle standard KCSAPI (Preserve full payload/body)
-// =====================================================================
-if (!window.hasKancolleResponseListener) {
-    window.addEventListener('game.response', (e) => {
-        const { path, body, postBody } = e.detail
+const getControlPort = () => {
+    return window.config ? window.config.get('plugin.forwarder.controlPort', 38591) : 38591
+}
 
-        if (path && path.startsWith('/kcsapi/')) {
-            const url = getTargetUrl()
-            fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    path: path,
-                    request: postBody,
-                    response: body,
-                    stage: 'response_received',
-                    timestamp: Date.now()
-                })
-            }).catch(() => { }) // Mute errors to prevent console spam when backend is offline
-        }
+if (!window.hasKancolleResponseListener) {
+    window.addEventListener('game.response', event => {
+        const { path, body, postBody } = event.detail
+        if (!path || !path.startsWith('/kcsapi/')) return
+
+        fetch(getTargetUrl(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                path,
+                request: postBody,
+                response: body,
+                stage: 'response_received',
+                timestamp: Date.now()
+            })
+        }).catch(() => { })
     })
     window.hasKancolleResponseListener = true
 }
 
-// =====================================================================
-// Track 2: Handle Map Resources (Capture URL immediately, bypass cache)
-// =====================================================================
 const registerMapInterceptor = () => {
     try {
         const { remote } = require('electron')
         const session = remote.getCurrentWindow().webContents.session
+        const filter = { urls: ['*://*/kcs2/resources/map/*'] }
 
-        // Remove existing listener (if any) to prevent duplication during hot-reloads or config updates
-        session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, null)
-
-        // Register the optimized core network interceptor with the latest dynamic URL config
-        session.webRequest.onBeforeRequest({ urls: ['*://*/kcs2/resources/map/*'] }, (details, callback) => {
-            const url = details.url
-            console.log(`[Electron core catched] MAP URL: ${url}`)
-
-            const targetUrl = getTargetUrl()
-            fetch(targetUrl, {
+        session.webRequest.onBeforeRequest(filter, null)
+        session.webRequest.onBeforeRequest(filter, (details, callback) => {
+            fetch(getTargetUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -59,42 +46,85 @@ const registerMapInterceptor = () => {
                     stage: 'going_to_send',
                     timestamp: Date.now()
                 })
-            }).catch(() => { }) // Mute errors
-
+            }).catch(() => { })
             callback({ cancel: false })
         })
-    } catch (e) {
-        // Silently fail if Electron remote context is unavailable
+    } catch (error) {
+        console.warn(`[API Forwarder] map interceptor is unavailable: ${error.message}`)
     }
 }
 
-// Run once on initial plugin load
-registerMapInterceptor()
+const startInteractionServer = () => {
+    if (window.__apiForwarderInteractionServer) {
+        window.__apiForwarderInteractionServer.stop()
+    }
+    const server = new InteractionServer(getControlPort())
+    server.start()
+    window.__apiForwarderInteractionServer = server
+}
 
-// =====================================================================
-// 3. Plugin Interface Export (Vanilla JS style with Settings UI)
-// =====================================================================
+registerMapInterceptor()
+startInteractionServer()
+
+const portInput = (value, onChange) => React.createElement('input', {
+    type: 'number',
+    value,
+    onChange,
+    min: 1024,
+    max: 65535,
+    style: {
+        width: '90px',
+        padding: '5px',
+        fontSize: '13px',
+        borderRadius: '4px',
+        border: '1px solid #555',
+        backgroundColor: '#222',
+        color: '#fff'
+    }
+})
+
 module.exports = {
     reactClass: class ForwarderPlugin extends React.Component {
         constructor(props) {
             super(props)
-            // Load initial port from config or fallback to 9223
-            const initialPort = (window.config) ? window.config.get('plugin.forwarder.port', 9223) : 9223
             this.state = {
-                port: initialPort
+                port: window.config ? window.config.get('plugin.forwarder.port', 9223) : 9223,
+                controlPort: getControlPort(),
+                interactionStatus: window.__apiForwarderInteractionServer.getStatus()
             }
         }
 
-        handlePortChange = (e) => {
-            const newPort = parseInt(e.target.value, 10) || ''
-            this.setState({ port: newPort })
+        componentDidMount() {
+            this.statusTimer = setInterval(() => {
+                const server = window.__apiForwarderInteractionServer
+                if (!server) return
+                const interactionStatus = server.getStatus()
+                if (interactionStatus !== this.state.interactionStatus) {
+                    this.setState({ interactionStatus })
+                }
+            }, 500)
+        }
 
-            // Save configuration directly to poi's global config system
-            if (window.config && newPort) {
-                window.config.set('plugin.forwarder.port', newPort)
+        componentWillUnmount() {
+            clearInterval(this.statusTimer)
+        }
 
-                // Re-register Electron interceptor to apply the new Port instantly
+        handlePortChange = event => {
+            const port = parseInt(event.target.value, 10) || ''
+            this.setState({ port })
+            if (window.config && port) {
+                window.config.set('plugin.forwarder.port', port)
                 registerMapInterceptor()
+            }
+        }
+
+        handleControlPortChange = event => {
+            const controlPort = parseInt(event.target.value, 10) || ''
+            this.setState({ controlPort })
+            if (window.config && controlPort) {
+                window.config.set('plugin.forwarder.controlPort', controlPort)
+                window.__apiForwarderInteractionServer.restart(controlPort)
+                this.setState({ interactionStatus: window.__apiForwarderInteractionServer.getStatus() })
             }
         }
 
@@ -102,42 +132,43 @@ module.exports = {
             return React.createElement(
                 'div',
                 { style: { padding: '15px', fontFamily: 'sans-serif' } },
-
-                // Header
-                React.createElement('h3', { style: { margin: '0 0 10px 0' } }, 'KanColle Dual-Track Forwarder'),
-
-                // Status Indicators
-                React.createElement('p', { style: { margin: '5px 0', fontSize: '13px' } }, '● KCSAPI: Full payload forwarding active'),
-                React.createElement('p', { style: { margin: '5px 0 15px 0', fontSize: '13px' } }, '● Map Resources: Real-time URL tracking active'),
-
-                // Divider line
-                React.createElement('hr', { style: { border: '0', borderTop: '1px solid #ccc', margin: '15px 0' } }),
-
-                // Settings Section
-                React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+                React.createElement('h3', { style: { margin: '0 0 10px 0' } }, 'KanColle API Forwarder'),
+                React.createElement('p', { style: { margin: '5px 0', fontSize: '13px' } }, '● KCSAPI forwarding active'),
+                React.createElement('p', { style: { margin: '5px 0', fontSize: '13px' } }, '● Map resource tracking active'),
+                React.createElement(
+                    'p',
+                    {
+                        style: {
+                            margin: '5px 0 15px 0',
+                            fontSize: '13px',
+                            color: this.state.interactionStatus.startsWith('listening') ? '#7fd17f' : '#ffb36b'
+                        }
+                    },
+                    `● Screenshot and input service: ${this.state.interactionStatus}`
+                ),
+                React.createElement('hr', { style: { border: 0, borderTop: '1px solid #ccc', margin: '15px 0' } }),
+                React.createElement(
+                    'div',
+                    { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
                     React.createElement('label', { style: { fontWeight: 'bold', fontSize: '12px' } }, 'Target Webhook Port:'),
-                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+                    React.createElement(
+                        'div',
+                        { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
                         React.createElement('span', { style: { fontSize: '13px', color: '#888' } }, 'http://localhost:'),
-                        React.createElement('input', {
-                            type: 'number',
-                            value: this.state.port,
-                            onChange: this.handlePortChange,
-                            min: 1024,
-                            max: 65535,
-                            style: {
-                                width: '90px',
-                                padding: '5px',
-                                fontSize: '13px',
-                                borderRadius: '4px',
-                                border: '1px solid #555',
-                                backgroundColor: '#222',
-                                color: '#fff'
-                            }
-                        }),
+                        portInput(this.state.port, this.handlePortChange),
                         React.createElement('span', { style: { fontSize: '13px', color: '#888' } }, '/webhook/kancolle')
                     ),
-                    React.createElement('p', { style: { fontSize: '11px', color: '#999', margin: '5px 0 0 0' } },
-                        '* Changes are saved and applied automatically in real time (Default: 9223).'
+                    React.createElement('label', { style: { fontWeight: 'bold', fontSize: '12px', marginTop: '8px' } }, 'Interaction Port:'),
+                    React.createElement(
+                        'div',
+                        { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+                        React.createElement('span', { style: { fontSize: '13px', color: '#888' } }, '127.0.0.1:'),
+                        portInput(this.state.controlPort, this.handleControlPortChange)
+                    ),
+                    React.createElement(
+                        'p',
+                        { style: { fontSize: '11px', color: '#999', margin: '5px 0 0 0' } },
+                        'Changes are applied immediately. Defaults: webhook 9223, interaction 38591.'
                     )
                 )
             )

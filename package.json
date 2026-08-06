@@ -1,6 +1,6 @@
 {
     "name": "poi-plugin-forwarder",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Forward intercepted game API data to custom port",
     "main": "index.js",
     "repository": {
